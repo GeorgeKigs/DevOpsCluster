@@ -1,0 +1,28 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postgres
+rules:
+  - apiGroups: [""]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sonarqube-admin
+  namespace: sonarqube
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sonarqube-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sonarqube-admin
+subjects:
+- kind: ServiceAccount
+  name: sonarqube-admin
+  namespace: sonarqube
+---

@@ -1,0 +1,112 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dev-full-access
+rules:
+- apiGroups:
+  - ""
+  - extensions
+  - apps
+  resources:
+  - '*'
+  verbs:
+  - '*'
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - '*'
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+spec:
+  chart:
+    spec:
+      chart: aws-load-balancer-controller
+      reconcileStrategy: ChartVersion
+      sourceRef:
+        kind: HelmRepository
+        name: eks
+      version: 1.4.7
+  values: 
+    clusterName: eu-west-1-eks-test-EKS-Cluster
+    serviceAccount:
+      name: aws-load-balancer-controller
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::635164870460:role/AmazonEKSALBRoleGKN
+  interval: 30m0s
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: istiod
+  namespace: istio-system
+spec:
+  chart:
+    spec:
+      chart: istiod
+      reconcileStrategy: ChartVersion
+      sourceRef:
+        kind: HelmRepository
+        name: istio
+      version: 1.17.0
+  dependsOn:
+  - name: istio-base
+    namespace: istio-system      
+  values:  
+    meshConfig:
+      accessLogFile: '/dev/stdout'  
+    global:
+      hub: 635164870460.dkr.ecr.eu-west-1.amazonaws.com/istio
+    revision: 1-17-0
+  interval: 10m0s
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    istio.io/rev: prod
+  name: istio-ingress
+---  
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: istio-ingressgateway
+  namespace: istio-ingress
+spec:
+  chart:
+    spec:
+      chart: gateway
+      reconcileStrategy: ChartVersion
+      sourceRef:
+        kind: HelmRepository
+        name: istio
+        namespace: istio-system
+      version: 1.17.0
+  dependsOn:
+  - name: istiod
+    namespace: istio-system      
+  values:  
+    service:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-name: eu-west-1-eks-test-nlb
+        # service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+        # service.beta.kubernetes.io/load-balancer-source-ranges: "0.0.0.0/0"
+        service.beta.kubernetes.io/aws-load-balancer-type: external
+        service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "instance"
+        service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: 'true'
+        # service.beta.kubernetes.io/aws-load-balancer-ssl-cert:arn:aws:acm:eu-west-1:007182356151:certificate/8e0f1add-1f9f-430b-a99e-d9df47b8169a
+        # service.beta.kubernetes.io/aws-load-balancer-ssl-ports: '443'
+        service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: 'Owner=gndungu,ManagedBy=DevSecOps,OrgBackupPolicy=None,Project=eks-test,createdBy=George Ndungu,BusinessOwner=Digital Engineering'
+    revision: 1-17-0
+  interval: 10m0s
