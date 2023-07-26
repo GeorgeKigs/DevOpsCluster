@@ -3,12 +3,13 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-pvc
+  namespace: sonarqube
 spec:
   accessModes:
     - ReadWriteMany
   resources:
     requests:
-      storage: 3Gi 
+      storage: 50Gi 
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -22,7 +23,7 @@ spec:
     name: postgres-pvc
     namespace: sonarqube
   capacity:
-    storage: 3Gi
+    storage: 50Gi
   accessModes:
     - ReadWriteMany
   local:
@@ -34,18 +35,18 @@ spec:
         - key: kubernetes.io/hostname
           operator: In
           values:
-          - ip-100-64-9-97.eu-west-1.compute.internal
+          - ip-100-64-23-16.eu-west-1.compute.internal
 ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: sonarqube-pv-volume
+  name: sonarqube-pv
   labels:
     type: local
 spec:
   storageClassName: gp2
   claimRef:
-    name: sonarqube-pv-claim
+    name: sonarqube-pvc
     namespace: sonarqube
   capacity:
     storage: 10Gi
@@ -60,12 +61,12 @@ spec:
         - key: kubernetes.io/hostname
           operator: In
           values:
-          - ip-100-64-19-63.eu-west-1.compute.internal
+          - ip-100-64-7-23.eu-west-1.compute.internal
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: sonarqube-pv-claim
+  name: sonarqube-pvc
   namespace: sonarqube
 spec:
   storageClassName: gp2
@@ -73,4 +74,4 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: 10Gi
+      storage: 10Gi  

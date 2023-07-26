@@ -33,3 +33,5 @@ subjects:
   name: jenkins-admin
   namespace: jenkins
 ---
+
+# TODO: Create a namespace for DevOps instead of seperating the tools
