@@ -3,7 +3,7 @@ terraform {
     organization = "Terraform-Organization-254"
 
     workspaces {
-      name = "EKS-project-Node-Group"
+      name = "EKS-trials-node-group"
     }
   }
   required_providers {

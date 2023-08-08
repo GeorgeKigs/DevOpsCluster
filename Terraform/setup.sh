@@ -6,15 +6,15 @@
 # get required options
 helpFunction()
 {
-   echo ""
-   echo "Usage: $0 -a userArn -c clusterName -r awsRegion -t gitlabToken -p projectName -b albRolearn -d accountId -f istioTag -g istioRevision -h fluxSopsKmsArn" 
-   echo -e "\t-a Aws user arn"
-   echo -e "\t-c Eks cluster name"
-   echo -e "\t-r Aws region"
-   echo -e "\t-t Gitlab Token"
-   echo -e "\t-p Project name"
-   echo -e "\t-b ALB role arn"
-   exit 1 # Exit script after printing help
+  echo ""
+  echo "Usage: $0 -a userArn -c clusterName -r awsRegion -t gitlabToken -p projectName -b albRolearn -d accountId -f istioTag -g istioRevision -h fluxSopsKmsArn" 
+  echo -e "\t-a Aws user arn"
+  echo -e "\t-c Eks cluster name"
+  echo -e "\t-r Aws region"
+  echo -e "\t-t Gitlab Token"
+  echo -e "\t-p Project name"
+  echo -e "\t-b ALB role arn"
+  exit 1 # Exit script after printing help
 }
 
 while getopts "a:c:r:t:p:b:d:f:g:h:" opt
@@ -35,7 +35,7 @@ do
 done
 
 # Print helpFunction in case parameters are empty
-if [ -z "$userArn" ] || [ -z "$clusterName" ] || [ -z "$awsRegion" ] || [ -z "$gitlabToken" ] || [ -z "$projectName" ] || [ -z "$albRolearn" ]  || [ -z "$accountId" ]  || [ -z "$istioTag" ] || [ -z "$istioRevision" ] || [ -z "$accountId" ]  || [ -z "$istioTag" ] || [ -z "$fluxSopsKmsArn" ]
+if [ -z "$userArn" ] || [ -z "$clusterName" ] || [ -z "eu-west-1" ] || [ -z "$gitlabToken" ] || [ -z "$projectName" ] || [ -z "$albRolearn" ]  || [ -z "635164870460" ]  || [ -z "1.19.0" ] || [ -z "$istioRevision" ] || [ -z "635164870460" ]  || [ -z "1.19.0" ] || [ -z "$fluxSopsKmsArn" ]
 then
    echo "Some or all of the parameters are empty";
    helpFunction
@@ -58,16 +58,16 @@ installSetupTools() {
     sudo mv /tmp/eksctl /usr/local/bin
 
     # install awscli
-    pip3 uninstall awscli
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip awscliv2.zip
-    sudo ./aws/install
-    exec bash
+    # pip3 uninstall awscli
+    # curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    # unzip awscliv2.zip
+    # sudo ./aws/install
+    # exec bash
     
     # install build & network troubleshooting tools
     sudo yum install gcc openssl-devel telnet jq -y
     
-    # install redis-cli
+    # # install redis-cli
     wget http://download.redis.io/redis-stable.tar.gz && tar xvzf redis-stable.tar.gz && cd redis-stable && make BUILD_TLS=yes
     sudo cp -r src/redis-cli /usr/local/bin
     
@@ -87,26 +87,34 @@ EOF
 
 
 updateKubeConfig() {
-    aws eks --region $awsRegion update-kubeconfig --name $clusterName
+    aws eks --region eu-west-1 update-kubeconfig --name $clusterName
 }
 
 
 installFlux() {
-  
+    : '
+    Key points to note within this script
+    The required fields are:
+    -> 
+    '
     export GITLAB_TOKEN=$gitlabToken
     flux bootstrap gitlab \
     --hostname=gitlab.safaricom.co.ke \
-    --owner=devsecops/fluxv2 \
-    --repository=fluxv2-aws \
-    --branch=master   \
-    --path=clusters/$projectName \ 
+    --owner=gndungu \
+    --repository=flux-main \
+    --kubeconfig=/home/ubuntu/.kube/config \
+    --context=arn:aws:eks:eu-west-1:635164870460:cluster/eu-west-1-eks-test-EKS-Cluster \
+    --branch=main   \
+    --reconcile=true \
+    --path=clusters/$projectName  \
     --components-extra=image-reflector-controller,image-automation-controller \
-    --token-auth
+    --personal=true \
+    --token-auth=true
 }
 
 cloneFluxRepo() {
     rm -rf /tmp/fluxv2-repo
-    git clone https://oauth2:$gitlabToken@gitlab.safaricom.co.ke/devsecops/fluxv2/fluxv2-aws.git /tmp/fluxv2-repo
+    git clone https://oauth2:$gitlabToken@gitlab.safaricom.co.ke/gndungu/flux-main.git /tmp/fluxv2-repo
 }
 
 updateFluxPatch() {
@@ -126,6 +134,28 @@ patches:
     name: kustomize-controller
 EOF
 }
+
+# installWeaveOps(){
+#   cd /tmp/fluxv2-repo
+  
+#   cat <<EOF > ./infrastructure/$projectName/configs/network-policies.yml
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: weave-gitops-ingress
+#   namespace: flux-system
+# spec:
+#   policyTypes:
+#     - Ingress
+#   ingress:
+#     - from:
+#         - namespaceSelector: {}
+#   podSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: weave-gitops
+# EOF
+# }
  
 initializeFluxInfra() {
     cd /tmp/fluxv2-repo 
@@ -142,14 +172,13 @@ resources:
   - developer-role.yaml
 EOF
 
-  flux create kustomization infra \
-  --namespace=flux-system \
-  --source=GitRepository/flux-system \
-  --path="./infrastructure/$projectName" \
-  --decryption-provider=sops \
-  --interval=5m \
-  --prune=true \
-  --export > ./clusters/$projectName/infra.yaml
+    flux create kustomization infra \
+    --namespace=flux-system \
+    --source=GitRepository/flux-system \
+    --path="./infrastructure/$projectName" \
+    --decryption-provider=sops \
+    --interval=5m \
+    --prune=true --export > ./clusters/$projectName/infra.yaml
 }
  
 installMetricsServer() {
@@ -160,7 +189,7 @@ installMetricsServer() {
 
 AddDevAccessClusterRole() {
     cd /tmp/fluxv2-repo 
-    cat <<EOF >> ./infrastructure/$projectName/developer-role.yaml
+    cat <<EOF > ./infrastructure/$projectName/developer-role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -182,7 +211,6 @@ rules:
   verbs:
   - '*'
 EOF
-
 }
 
 installAlbController() {
@@ -193,7 +221,7 @@ installAlbController() {
     --namespace=kube-system \
     --export  > ./infrastructure/$projectName/alb-controller.yaml
     
-    cat <<EOF >> ./infrastructure/$projectName/alb-controller.yaml
+    cat <<EOF > ./infrastructure/$projectName/alb-controller.yaml
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
 kind: HelmRelease
@@ -217,7 +245,6 @@ spec:
         eks.amazonaws.com/role-arn: ${albRolearn}
   interval: 30m0s
 EOF
-
 }
 
 installIstioPrerequisites() {
@@ -260,7 +287,7 @@ EOF
     --depends-on="kube-system/aws-load-balancer-controller" \
     --export  >> ./infrastructure/$projectName/istio-base.yaml
     
-    # istall istiod
+    # install istiod
     cat <<EOF > ./infrastructure/$projectName/istiod.yaml
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
@@ -320,7 +347,7 @@ spec:
   values:  
     service:
       annotations:
-        service.beta.kubernetes.io/aws-load-balancer-name: ${awsRegion}-eks-test
+        service.beta.kubernetes.io/aws-load-balancer-name: ${awsRegion}-eks-test-elb
         # service.beta.kubernetes.io/aws-load-balancer-internal: "true"
         # service.beta.kubernetes.io/load-balancer-source-ranges: "0.0.0.0/0"
         service.beta.kubernetes.io/aws-load-balancer-type: external
@@ -328,12 +355,13 @@ spec:
         service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: 'true'
         # service.beta.kubernetes.io/aws-load-balancer-ssl-cert:arn:aws:acm:eu-west-1:007182356151:certificate/8e0f1add-1f9f-430b-a99e-d9df47b8169a
         # service.beta.kubernetes.io/aws-load-balancer-ssl-ports: '443'
-        service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: 'Owner=gndungu,ManagedBy=DevSecOps,OrgBackupPolicy=None,Project=eks-test,createdBy=Noah Makau,BusinessOwner=Digital Engineering'
+        service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: 'Owner=gndungu,ManagedBy=DevSecOps,OrgBackupPolicy=None,Project=nkm-sbacc,createdBy=Noah Makau,BusinessOwner=Digital Engineering'
     revision: ${istioRevision}
   interval: 10m0s
 EOF
 
 }
+
 
 pushUpdatesToGit() {
   cd /tmp/fluxv2-repo 
@@ -341,10 +369,11 @@ pushUpdatesToGit() {
   git commit -m "setup infra for $projectName"
   git push
 }
+
 setIstioRevision(){
-  sleep 120
+  # sleep 20
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION=$istioTag sh -
-  ./istio-${istioTag}/bin/istioctl x revision tag set prod --revision $istioRevision 
+  ./istio-${istioTag}/bin/istioctl x revision tag set prod --revision $istioRevision
   kubectl delete pod --all -n istio-ingress 
 }
 
@@ -360,4 +389,4 @@ setIstioRevision(){
 # installIstioPrerequisites
 # installIstio
 # pushUpdatesToGit
-# setIstioRevision
+setIstioRevision
