@@ -1,3 +1,10 @@
+: '
+Options to use as variables:
+-m ==> eu-west-1-k8s-hardway-main ==> Master node name
+-w ==> k8s-hardway-nodes ==> Worker nodes name
+-l ==> k8s-hardway-nlb ===> Load balancer name
+'
+
 
 while getopts ":m:w:k:l:" opt; do
   case $opt in
@@ -10,21 +17,52 @@ while getopts ":m:w:k:l:" opt; do
 done
 
 # cd into certificates directory
+checking_prerequisites(){
+    # the folder certificates should be created in the same directory as this script
+    if [ ! -d "certificates" ]; then
+        echo "\u2718 Error: Please run Certificates.sh first" >&2
+        exit 1
+    else
+        cd certificates
+    fi
+}
+
 define_vars(){
-    KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers\
-        --names ${LOADBALANCER_NAME}\
-        --query "LoadBalancers[].AvailabilityZones[].LoadBalancerAddresses[].IpAddress[]"\
-        --output text)
+    # KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers\
+    #     --names ${LOADBALANCER_NAME}\
+    #     --query "LoadBalancers[].AvailabilityZones[].LoadBalancerAddresses[].IpAddress[]"\
+    #     --output text)
 
     MASTER_NODE=$(aws ec2 describe-instances \
         --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
         --query "Reservations[*].Instances[*].InstanceId" \
         --output text)
+    echo -e "\xE2\x9C\x94 Master node is ${MASTER_NODE}"
+
+   EXTERNAL_MASTER_IP=$(aws ec2 describe-instances \
+            --filters "Name=instance-id,Values=${MASTER_NODE}" \
+            --query "Reservations[*].Instances[*].PublicIpAddress" \
+            --output text)
+    echo -e "\xE2\x9C\x94 Master node IP is ${EXTERNAL_MASTER_IP}"
 
     WORKER_NODES=$(aws ec2 describe-instances \
         --filters "Name=tag:Name,Values=${WORKER_NODES_NAME}" \
         --query "Reservations[*].Instances[*].InstanceId" \
         --output text)
+    echo -e "\xE2\x9C\x94 Worker nodes are ${WORKER_NODES}"
+
+    KEY_FILE=$(aws ec2 describe-instances \
+    --filters "Name=instance-id,Values=${MASTER_NODE}" \
+    --query "Reservations[*].Instances[*].KeyName" \
+    --output text)
+
+    if [ ! -f "../${KEY_FILE}.pem" ]; then
+        echo -e "\u2718 Error: ${KEY_FILE}.pem file does not exist" >&2
+        exit 1
+    fi
+
+    echo -e "\xE2\x9C\x94 ${KEY_FILE}.pem file exists"
+  
 }
 
 define_kubeconfigs(){
@@ -54,11 +92,13 @@ define_kubeconfigs(){
 
 # The configs will be created on the controller nodes
 controller_configs(){
+
     for instance in ${WORKER_NODES}; do
+
         kubectl config set-cluster kubernetes-the-hard-way \
             --certificate-authority=ca.pem \
             --embed-certs=true \
-            --server=https://${KUBERNETES_PUBLIC_ADDRESS}:6443 \
+            --server=https://${EXTERNAL_MASTER_IP}:6443 \
             --kubeconfig=${instance}.kubeconfig
 
         kubectl config set-credentials system:node:${instance} \
@@ -80,7 +120,7 @@ controller_configs(){
 
 # The kube-proxy Kubernetes Configuration File
 kube_proxy_configs(){
-    define_kubeconfigs ${KUBERNETES_PUBLIC_ADDRESS} kube-proxy
+    define_kubeconfigs ${EXTERNAL_MASTER_IP} kube-proxy
 }
 
 # The kube-controller-manager Kubernetes Configuration File
@@ -121,35 +161,44 @@ EOF
 
 # distribute the kubeconfig files to the worker nodes
 distribute_worker_configs(){
-    for instance in WORKER_NODES; do
+
+    for instance in $WORKER_NODES; do
         DNS_NAME=$(aws ec2 describe-instances \
-        --filters "Name=instance-id,Values=${worker_instance}" \
+        --filters "Name=instance-id,Values=${instance}" \
         --query "Reservations[*].Instances[*].PublicDnsName" \
         --output text)
 
-    scp -i ${KEY_FILE} ${instance}.kubeconfig kube-proxy.kubeconfig ubuntu@${DNS_NAME}:~/
+        sudo scp -i ../${KEY_FILE}.pem ${instance}.kubeconfig kube-proxy.kubeconfig ubuntu@${DNS_NAME}:~/
+
+        # success message
+        echo -e "\xE2\x9C\x94 ${instance} kubeconfig file has been distributed successfully"
     done
 }
 
 # distribute the kubeconfig files and encryption to the controller manager nodes
 distribute_controller_configs(){
-    for instance in MASTER_NODE; do
+
+    for instance in $MASTER_NODE; do
         DNS_NAME=$(aws ec2 describe-instances \
-        --filters "Name=instance-id,Values=${master_instance}" \
+        --filters "Name=instance-id,Values=${instance}" \
         --query "Reservations[*].Instances[*].PublicDnsName" \
         --output text)
 
-    scp -i ${KEY_FILE} admin.kubeconfig kube-controller-manager.kubeconfig \
-        kube-scheduler.kubeconfig encryption-config.yaml ubuntu@${DNS_NAME}:~/
+        sudo scp -i ../${KEY_FILE}.pem admin.kubeconfig kube-controller-manager.kubeconfig \
+            kube-scheduler.kubeconfig encryption-config.yaml ubuntu@${DNS_NAME}:~/
+        
+        # success message
+        echo -e "\xE2\x9C\x94 ${instance} kubeconfig file has been distributed successfully"
     done
 }
 
+checking_prerequisites
 define_vars
-define_encryption
-controller_configs
-kube_proxy_configs
-controller_manager_configs
-scheduler_configs
-admin_configs
-distribute_worker_configs
+# define_encryption
+# controller_configs
+# kube_proxy_configs
+# controller_manager_configs
+# scheduler_configs
+# admin_configs
+# distribute_worker_configs
 distribute_controller_configs
