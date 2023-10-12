@@ -3,14 +3,17 @@
 # It is based on the tutorial from Kelsey Hightower: 
 # https://github.com/kelseyhightower/kubernetes-the-hard-way
 
+
+### TODO: Check how we can test the validity of the certificates
+
 : '
 Options to use as variables:
--m ==> eu-west-1-k8s-hardway-main ==> Master node name
--w ==> k8s-hardway-nodes ==> Worker nodes name
--l ==> k8s-hardway-nlb ===> Load balancer name
+-m ==> k8s-hardway ==> Master node name
+-l ==> k8s-hardway ===> Load balancer name
+-w ==> k8s-hardway-nodes ==> Master node name
 '
 
-while getopts ":m:w:k:l:" opt; do
+while getopts ":m:w:l:" opt; do
   case $opt in
     m) MASTER_NODE_NAME="$OPTARG";;
     w) WORKER_NODES_NAME="$OPTARG";;
@@ -26,6 +29,7 @@ checking_prerequisites(){
   # - cfssljson  ==> Installed with cfssl
   # - aws-cli ==> sudo apt-get install awscli
 
+  ### AWS CLI configurations 
   echo "Checking if aws-cli is installed"
   if ! [ -x "$(command -v aws)" ]; then
     echo 'Error: aws-cli is not installed.' >&2
@@ -34,9 +38,9 @@ checking_prerequisites(){
     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
     unzip awscliv2.zip
     sudo ./aws/install
+
     echo -e "\xE2\x9C\x94 aws-cli is installed"
   fi
-
   echo -e "\xE2\x9C\x94 aws-cli is installed"
   echo "==== Checking if aws-cli is configured ===="
 
@@ -49,6 +53,17 @@ checking_prerequisites(){
   echo -e "\xE2\x9C\x94 aws-cli is configured"
   echo "==== Getting the keys file ===="
 
+
+  ##### CFSSL #####
+  # Check if cfssl and aws-cli are installed
+  if ! [ -x "$(command -v cfssl)" ]; then
+    echo '\u2718 Error: cfssl is not installed.' >&2
+    echo "====Installing cfssl===="
+    sudo apt-get install golang-cfssl
+  fi
+  echo -e "\xE2\x9C\x94 cfssl is installed"
+
+  #### AWS NODE RESULTS ####
   # expected output ===> i-0122b09d7f47e06f9
   MASTER_NODE=$(aws ec2 describe-instances \
     --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
@@ -60,11 +75,15 @@ checking_prerequisites(){
     --filters "Name=tag:Name,Values=${WORKER_NODES_NAME}" \
     --query "Reservations[*].Instances[*].InstanceId" \
     --output text)
+
   echo -e "\xE2\x9C\x94 Worker nodes are ${WORKER_NODES}"
 
   # expected output ===> k8s-hardway
+  SINGLE_MASTER_INSTANCE=$(echo $MASTER_NODE| awk '{print $1}')
+  echo -e "\xE2\x9C\x94 Single master instance is ${SINGLE_MASTER_INSTANCE}"
+
   KEY_FILE=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${MASTER_NODE}" \
+    --filters "Name=instance-id,Values=${SINGLE_MASTER_INSTANCE}" \
     --query "Reservations[*].Instances[*].KeyName" \
     --output text)
   echo -e "\xE2\x9C\x94 Keys file is ${KEY_FILE}"
@@ -74,15 +93,6 @@ checking_prerequisites(){
     exit 1
   fi
   echo -e "\xE2\x9C\x94 ${KEY_FILE}.pem file exists"
-  
-
-  # Check if cfssl and aws-cli are installed
-  if ! [ -x "$(command -v cfssl)" ]; then
-    echo '\u2718 Error: cfssl is not installed.' >&2
-    echo "====Installing cfssl===="
-    sudo apt-get install golang-cfssl
-  fi
-  echo -e "\xE2\x9C\x94 cfssl is installed"
   
 }
 
@@ -242,18 +252,23 @@ api_server(){
 
   ## Get the public address of the load balancer
   MASTER_PUBLIC_IP=$(aws ec2 describe-instances \
-        --filters "Name=instance-id,Values=${MASTER_NODE}" \
+        --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
         --query "Reservations[*].Instances[*].PublicIpAddress" \
-        --output text)
+        --output text | sed 's/\t/,/g')
+
+  echo -e "\xE2\x9C\x94 Master public ip is ${MASTER_PUBLIC_IP}"
+  # seperate the text with , as the delimiter
 
   KUBERNETES_HOSTNAMES=kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster,kubernetes.svc.cluster.local
 
   local INTERNAL_IP=$(aws ec2 describe-instances \
-        --filters "Name=instance-id,Values=${MASTER_NODE}" \
+        --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}"\
         --query "Reservations[*].Instances[*].PrivateIpAddress" \
-        --output text)
+        --output text | sed 's/\t/,/g')
 
+  echo -e "\xE2\x9C\x94 Master internal ip is ${INTERNAL_IP}"
   # Check on the ips used
+
   cfssl gencert \
     -ca=ca.pem \
     -ca-key=ca-key.pem \
@@ -290,7 +305,7 @@ distribute_workers(){
     
     echo -e "\xE2\x9C\x94 ${worker_instance} DNS name is ${DNS_NAME}"
 
-    sudo scp -i ../${KEY_FILE}.pem ${worker_instance}-key.pem ${worker_instance}.pem ca.pem ubuntu@${DNS_NAME}:~/
+    scp -i ../${KEY_FILE}.pem ${worker_instance}-key.pem ${worker_instance}.pem ca.pem ubuntu@${DNS_NAME}:~/
 
     # success message
     echo -e "\xE2\x9C\x94 ${worker_instance} files have been distributed successfully"
@@ -310,7 +325,7 @@ distribute_controllers(){
 
     echo -e "\xE2\x9C\x94 ${master_instance} DNS name is ${DNS_NAME}"
 
-    sudo scp -i ../${KEY_FILE}.pem ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
+    scp -i ../${KEY_FILE}.pem ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
       service-account-key.pem service-account.pem ubuntu@${DNS_NAME}:~/
     
     # success message
@@ -321,13 +336,13 @@ distribute_controllers(){
 
 checking_prerequisites
 change_dir
-# generate_ca_certs
-# admin_controller
-# worker_nodes
-# control_manger
-# kube_proxy
-# scheduler
-# api_server
-# service_account
-# distribute_workers
+generate_ca_certs
+admin_controller
+worker_nodes
+control_manger
+kube_proxy
+scheduler
+api_server
+service_account
+distribute_workers
 distribute_controllers

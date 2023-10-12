@@ -1,13 +1,63 @@
-POD_CIDR="10.0.1.0/24"
+# todo: try to use jq for the individual worker nodes
 
-while getopts ":i:" opt; do
+while getopts ":m:w:l:" opt; do
   case $opt in
-    i) NODE_NAME="$OPTARG";;
+    m) MASTER_NODE_NAME="$OPTARG";;
+    w) WORKER_NODE_NAME="$OPTARG";;
+    l) LOADBALANCER_NAME="$OPTARG";;
     \?) echo "Invalid option -$OPTARG" >&2;;
   esac
 done
 
-create_files(){
+
+# getting the load balancer dns name
+LOADBALANCER_DNS_NAME=$(aws elbv2 describe-load-balancers\
+  --names ${LOADBALANCER_NAME}\
+  --query "LoadBalancers[].DNSName[]"\
+  --output text)
+
+echo -e "\e[32m \xE2\x9C\x94 Load Balancer DNS Name is: ${LOADBALANCER_DNS_NAME}\e[0m"
+
+# getting the worker node details
+RAW_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${WORKER_NODE_NAME}")
+
+#### SUBNETS ####
+# getting the subnet details to get the cidr block
+MASTER_NODE_SUBNET_ID=$(echo $(aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" | \
+  jq -r '.Reservations[].Instances[].SubnetId') | awk '{print $1}')
+
+WORKER_NODE_SUBNET_ID=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].SubnetId')
+
+SERVICE_CIDR=$(aws ec2 describe-subnets \
+  --filters "Name=subnet-id,Values=${MASTER_NODE_SUBNET_ID}" | \
+  jq -r '.Subnets[].CidrBlock')
+
+POD_CIDR=$(aws ec2 describe-subnets \
+  --filters "Name=subnet-id,Values=${WORKER_NODE_SUBNET_ID}" | \
+  jq -r '.Subnets[].CidrBlock')
+
+# success message to get the cidr block
+echo -e "\e[32m \xE2\x9C\x94 Service CIDR is: ${SERVICE_CIDR}\e[0m"
+echo -e "\e[32m \xE2\x9C\x94 Pod CIDR is: ${POD_CIDR}\e[0m"
+
+# getting the worker node details
+NODE_IDS=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].InstanceId')
+
+KEY_FILE=$(echo $(echo $RAW_JSON | jq -r '.Reservations[].Instances[].KeyName') | awk '{print $1}')
+
+# success message to get key file
+echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY_FILE}\e[0m"
+
+KEY="${home_dir}/${KEY_FILE}.pem"
+home_dir=$(pwd)
+
+# success message to get home directory
+echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
+
+
+create_networking_files(){
+
 cat > 10-bridge.conf <<EOF 
 {
     "cniVersion": "0.4.0",
@@ -40,6 +90,9 @@ EOF
 # success message to create 99-loopback.conf
 echo -e "\e[32m \xE2\x9C\x94 99-loopback.conf file created successfully\e[0m"
 
+}
+
+containerd_files(){
 cat > config.toml << EOF
 [plugins]
   [plugins.cri.containerd]
@@ -77,6 +130,13 @@ EOF
 
 # success message to create containerd.service
 echo -e "\e[32m \xE2\x9C\x94 containerd.service file created successfully\e[0m"
+}
+
+
+kubeconfig_files(){
+
+HOSTNAME=$1
+# todo: check on the clusterDNS Value. I think it should be the kubernetes service ip
 
 cat > kubelet-config.yaml<<EOF
 kind: KubeletConfiguration
@@ -92,7 +152,7 @@ authorization:
   mode: Webhook
 clusterDomain: "cluster.local"
 clusterDNS:
-  - "10.0.1.124"
+  - "${LOADBALANCER_DNS_NAME}"
 podCIDR: "${POD_CIDR}"
 resolvConf: "/run/systemd/resolve/resolv.conf"
 runtimeRequestTimeout: "15m"
@@ -155,13 +215,11 @@ clusterCIDR: "${POD_CIDR}"
 EOF
 }
 
-define_variables(){
+bootstrap_worker(){
+  NODE_ID=$1
   
-  # success message to get node ids
-  echo -e "\e[32m \xE2\x9C\x94 Node IDs are: ${NODE_IDS}\e[0m"
+  echo -e "\e[32m \xE2\x9C\x94 Bostrapping the worker node: ${NODE_IDS}\e[0m"
   
-  HOSTNAME=${NODE_ID}
-
   DNS_NAME=$(aws ec2 describe-instances \
     --filters "Name=instance-id,Values=${NODE_ID}" \
     --query "Reservations[*].Instances[*].PublicDnsName" \
@@ -169,44 +227,28 @@ define_variables(){
 
   # success message to get dns name
   echo -e "\e[32m \xE2\x9C\x94 DNS Name is: ${DNS_NAME}\e[0m"
+  
+  # bootstrap files
+  create_networking_files
+  containerd_files
+  kubeconfig_files ${NODE_ID}
 
-  KEY_FILE=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${NODE_ID}" \
-    --query "Reservations[*].Instances[*].KeyName" \
-    --output text)
-
-  # success message to get key file
-  echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY_FILE}\e[0m"
-
-  KEY="${home_dir}/${KEY_FILE}.pem"
-
-}
-
-push_cloud(){
-  local KEY=$1
-  local DNS_NAME=$2
-
+  # push the files to the instance
   sudo scp -i ${KEY} \
     10-bridge.conf 99-loopback.conf config.toml\
-    containerd.service kubelet-config.yaml kubelet.service BootstrapWorkers.sh\
+    containerd.service kubelet-config.yaml kubelet.service ${home_dir}/BootstrapWorkers.sh\
     kube-proxy-config.yaml kube-proxy.service \
     ubuntu@${DNS_NAME}:~/
   
   # success message to push files to cloud
   echo -e "\e[32m \xE2\x9C\x94 Files pushed to cloud\e[0m"
+
+  # run the bootstrap script
+  sudo ssh -i ${KEY} ubuntu@${DNS_NAME} "bash BootstrapWorkers.sh -i ${NODE_ID}"
+
 }
 
-NODE_IDS=$(aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=${NODE_NAME}" \
-    --query "Reservations[*].Instances[*].InstanceId" \
-    --output text)
-
-home_dir=$(pwd)
-echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
-
 for NODE_ID in ${NODE_IDS}; do
-
-  define_variables
 
   echo -e "\e[32m \xE2\x9C\x94 Worker Node is ${NODE_ID} \e[0m "
 
@@ -215,12 +257,7 @@ for NODE_ID in ${NODE_IDS}; do
 
   cd ${home_dir}/certificates/${NODE_ID}
 
-  create_files
-
-  push_cloud ${KEY} ${DNS_NAME}
-
-  echo ${NODE_ID}
-  sudo ssh -i ${KEY} ubuntu@${DNS_NAME} "bash BootstrapWorkers.sh -i ${NODE_ID}"
-
+  bootstrap_worker ${NODE_ID}
+  
   cd ${home_dir}
 done

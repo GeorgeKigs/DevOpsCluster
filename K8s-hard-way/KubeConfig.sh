@@ -5,12 +5,12 @@ Options to use as variables:
 -l ==> k8s-hardway-nlb ===> Load balancer name
 '
 
+# -m m k8s-hardway -w k8s-hardway-nodes -l k8s-hardway
 
-while getopts ":m:w:k:l:" opt; do
+while getopts ":m:w:l:" opt; do
   case $opt in
     m) MASTER_NODE_NAME="$OPTARG";;
     w) WORKER_NODES_NAME="$OPTARG";;
-    k) KEY_FILE="$OPTARG";;
     l) LOADBALANCER_NAME="$OPTARG";;
     \?) echo "Invalid option -$OPTARG" >&2;;
   esac
@@ -28,21 +28,25 @@ checking_prerequisites(){
 }
 
 define_vars(){
-    # KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers\
-    #     --names ${LOADBALANCER_NAME}\
-    #     --query "LoadBalancers[].AvailabilityZones[].LoadBalancerAddresses[].IpAddress[]"\
-    #     --output text)
+    KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers\
+        --names ${LOADBALANCER_NAME}\
+        --query "LoadBalancers[].DNSName"\
+        --output text)
+
+    echo -e "\xE2\x9C\x94 Kubernetes Public Address is: ${KUBERNETES_PUBLIC_ADDRESS}"
 
     MASTER_NODE=$(aws ec2 describe-instances \
         --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
         --query "Reservations[*].Instances[*].InstanceId" \
         --output text)
+
     echo -e "\xE2\x9C\x94 Master node is ${MASTER_NODE}"
 
-   EXTERNAL_MASTER_IP=$(aws ec2 describe-instances \
+    EXTERNAL_MASTER_IP=$(aws ec2 describe-instances \
             --filters "Name=instance-id,Values=${MASTER_NODE}" \
             --query "Reservations[*].Instances[*].PublicIpAddress" \
             --output text)
+
     echo -e "\xE2\x9C\x94 Master node IP is ${EXTERNAL_MASTER_IP}"
 
     WORKER_NODES=$(aws ec2 describe-instances \
@@ -50,9 +54,11 @@ define_vars(){
         --query "Reservations[*].Instances[*].InstanceId" \
         --output text)
     echo -e "\xE2\x9C\x94 Worker nodes are ${WORKER_NODES}"
+    
+    SINGLE_MASTER_INSTANCE=$(echo $MASTER_NODE| awk '{print $1}')
 
     KEY_FILE=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${MASTER_NODE}" \
+    --filters "Name=instance-id,Values=${SINGLE_MASTER_INSTANCE}" \
     --query "Reservations[*].Instances[*].KeyName" \
     --output text)
 
@@ -98,7 +104,7 @@ controller_configs(){
         kubectl config set-cluster kubernetes-the-hard-way \
             --certificate-authority=ca.pem \
             --embed-certs=true \
-            --server=https://${EXTERNAL_MASTER_IP}:6443 \
+            --server=https://${KUBERNETES_PUBLIC_ADDRESS}:6443 \
             --kubeconfig=${instance}.kubeconfig
 
         kubectl config set-credentials system:node:${instance} \
@@ -120,7 +126,7 @@ controller_configs(){
 
 # The kube-proxy Kubernetes Configuration File
 kube_proxy_configs(){
-    define_kubeconfigs ${EXTERNAL_MASTER_IP} kube-proxy
+    define_kubeconfigs ${KUBERNETES_PUBLIC_ADDRESS} kube-proxy
 }
 
 # The kube-controller-manager Kubernetes Configuration File
@@ -168,7 +174,7 @@ distribute_worker_configs(){
         --query "Reservations[*].Instances[*].PublicDnsName" \
         --output text)
 
-        sudo scp -i ../${KEY_FILE}.pem ${instance}.kubeconfig kube-proxy.kubeconfig ubuntu@${DNS_NAME}:~/
+        scp -i ../${KEY_FILE}.pem ${instance}.kubeconfig kube-proxy.kubeconfig ubuntu@${DNS_NAME}:~/
 
         # success message
         echo -e "\xE2\x9C\x94 ${instance} kubeconfig file has been distributed successfully"
@@ -184,7 +190,7 @@ distribute_controller_configs(){
         --query "Reservations[*].Instances[*].PublicDnsName" \
         --output text)
 
-        sudo scp -i ../${KEY_FILE}.pem admin.kubeconfig kube-controller-manager.kubeconfig \
+        scp -i ../${KEY_FILE}.pem admin.kubeconfig kube-controller-manager.kubeconfig \
             kube-scheduler.kubeconfig encryption-config.yaml ubuntu@${DNS_NAME}:~/
         
         # success message
@@ -194,11 +200,11 @@ distribute_controller_configs(){
 
 checking_prerequisites
 define_vars
-# define_encryption
-# controller_configs
-# kube_proxy_configs
-# controller_manager_configs
-# scheduler_configs
-# admin_configs
-# distribute_worker_configs
+define_encryption
+controller_configs
+kube_proxy_configs
+controller_manager_configs
+scheduler_configs
+admin_configs
+distribute_worker_configs
 distribute_controller_configs

@@ -46,6 +46,8 @@ download_binaries(){
   # success message if the command is successful
   echo -e "\e[32m \xE2\x9C\x94 Worker binaries downloaded \e[0m"
 }
+
+
 # Install the Containerd Binaries
 install_containerd(){
   mkdir -p containerd
@@ -55,11 +57,13 @@ install_containerd(){
   sudo mv containerd/bin/* /bin/
 }
 
+
 setup_containerd(){
   sudo mv runc.amd64 runc
   chmod +x crictl kubectl kube-proxy kubelet runc 
   sudo mv crictl kubectl kube-proxy kubelet runc /usr/local/bin/
 }
+
 
 configure_cni(){
   # Configure CNI Networking
@@ -73,6 +77,7 @@ configure_cni(){
   echo -e "\e[32m \xE2\x9C\x94 CNI Networking configured \e[0m"
 }
 
+
 # Configure the Kubelet
 setup_kubelet(){
 
@@ -85,6 +90,7 @@ setup_kubelet(){
   # success message if the command is successful
   echo -e "\e[32m \xE2\x9C\x94 Kubelet configured \e[0m"
 }
+
 
 # Configure the Kube-Proxy
 setup_kubeproxy(){

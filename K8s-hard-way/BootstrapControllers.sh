@@ -20,6 +20,18 @@ install_etcd(){
 
     echo -e "\e[32m \xE2\x9C\x94 Success creation of etcd\e[0m"
 
+    # verify  connection of the etcd cluster
+    sudo systemctl daemon-reload
+    sudo systemctl enable etcd
+    sudo systemctl start etcd
+    sudo systemctl status etcd
+
+    sudo ETCDCTL_API=3 etcdctl member list \
+    --endpoints=https://127.0.0.1:2379 \
+    --cacert=/etc/etcd/ca.pem \
+    --cert=/etc/etcd/kubernetes.pem \
+    --key=/etc/etcd/kubernetes-key.pem
+
 }
 
 install_controller(){
@@ -69,8 +81,8 @@ install_scheduler(){
 
 initialise(){
   sudo systemctl daemon-reload
-  sudo systemctl enable etcd kube-apiserver kube-controller-manager kube-scheduler
-  sudo systemctl start etcd kube-apiserver kube-controller-manager kube-scheduler
+  sudo systemctl enable kube-apiserver kube-controller-manager kube-scheduler
+  sudo systemctl start kube-apiserver kube-controller-manager kube-scheduler
 
   # success message if the command is successful
   echo -e "\e[32m \xE2\x9C\x94 Successful initialisation of the main cluster \e[0m"
@@ -115,4 +127,4 @@ install_scheduler
 initialise
 initialise_rbac
 health_check
-# verify
+verify
