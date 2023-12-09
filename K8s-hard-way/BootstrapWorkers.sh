@@ -13,6 +13,7 @@ init_setup(){
   sudo apt full-upgrade -y
   sudo apt-get -y install socat conntrack ipset
 
+
   # success message if the command is successful
   echo -e "\e[32m \xE2\x9C\x94 OS dependencies installed \e[0m"
 
