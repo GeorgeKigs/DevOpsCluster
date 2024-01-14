@@ -42,18 +42,17 @@ checking_prerequisites(){
     echo -e "\xE2\x9C\x94 aws-cli is installed"
   fi
   echo -e "\xE2\x9C\x94 aws-cli is installed"
-  echo "==== Checking if aws-cli is configured ===="
 
+  echo "==== Checking if aws-cli is configured ===="
   if ! [ -x "$(command -v aws configure)" ]; then
     echo -e '\u2718 Error: aws-cli is not configured.' >&2
     echo "Please run aws configure"
     exit 1
   fi
-
   echo -e "\xE2\x9C\x94 aws-cli is configured"
+
+
   echo "==== Getting the keys file ===="
-
-
   ##### CFSSL #####
   # Check if cfssl and aws-cli are installed
   if ! [ -x "$(command -v cfssl)" ]; then
@@ -62,36 +61,39 @@ checking_prerequisites(){
     sudo apt-get install golang-cfssl
   fi
   echo -e "\xE2\x9C\x94 cfssl is installed"
+}
 
+define_vars(){
   #### AWS NODE RESULTS ####
   # expected output ===> i-0122b09d7f47e06f9
-  MASTER_NODE=$(aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
-    --query "Reservations[*].Instances[*].InstanceId" \
+
+  RAW_MASTER_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" )
+  RAW_WORKER_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${WORKER_NODES_NAME}" )
+
+  KUBERNETES_PUBLIC_ADDRESS=$(aws elbv2 describe-load-balancers\
+    --names ${LOADBALANCER_NAME}\
+    --query "LoadBalancers[].DNSName"\
     --output text)
+
+  MASTER_NODE=$(echo $RAW_MASTER_JSON | jq -r '.Reservations[].Instances[].InstanceId')
   echo -e "\xE2\x9C\x94 Master node is ${MASTER_NODE}"
 
-  WORKER_NODES=$(aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=${WORKER_NODES_NAME}" \
-    --query "Reservations[*].Instances[*].InstanceId" \
-    --output text)
-
+  WORKER_NODES=$(echo $RAW_WORKER_JSON | jq -r '.Reservations[].Instances[].InstanceId')
   echo -e "\xE2\x9C\x94 Worker nodes are ${WORKER_NODES}"
 
   # expected output ===> k8s-hardway
   SINGLE_MASTER_INSTANCE=$(echo $MASTER_NODE| awk '{print $1}')
   echo -e "\xE2\x9C\x94 Single master instance is ${SINGLE_MASTER_INSTANCE}"
 
-  KEY_FILE=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${SINGLE_MASTER_INSTANCE}" \
-    --query "Reservations[*].Instances[*].KeyName" \
-    --output text)
+  KEY_FILE=$(echo $(echo $RAW_MASTER_JSON | jq -r '.Reservations[].Instances[].KeyName') | awk '{print $1}')
   echo -e "\xE2\x9C\x94 Keys file is ${KEY_FILE}"
 
+  # ? find a better way to store the key file
   if [ ! -f "${KEY_FILE}.pem" ]; then
     echo "\u2718 Error: ${KEY_FILE}.pem file does not exist" >&2
     exit 1
   fi
+
   echo -e "\xE2\x9C\x94 ${KEY_FILE}.pem file exists"
   
 }
@@ -100,7 +102,7 @@ checking_prerequisites(){
 # check if folder exists
 change_dir(){
   if [ ! -d "certificates" ]; then
-    mkdir certificates
+    mkdir -p certificates
   fi
   echo "Changing directory to certificates"
   cd certificates
@@ -181,15 +183,11 @@ worker_nodes(){
     FILE_NAME="${instance}-csr"
     define_certicate "system:node:${instance}" "system:nodes" ${FILE_NAME}
 
-    EXTERNAL_IP=$(aws ec2 describe-instances \
-      --filters "Name=instance-id,Values=${instance}" \
-      --query "Reservations[*].Instances[*].PublicIpAddress" \
-      --output text)
+    EXTERNAL_IP=$(echo $RAW_WORKER_JSON | \
+      jq --arg instance "$instance" -r '.Reservations[].Instances[] | select(.InstanceId==$instance) | .PublicIpAddress')
 
-    INTERNAL_IP=$(aws ec2 describe-instances \
-        --filters "Name=instance-id,Values=${instance}" \
-        --query "Reservations[*].Instances[*].PrivateIpAddress" \
-        --output text)
+    INTERNAL_IP=$(echo $RAW_WORKER_JSON | \
+      jq --arg instance "$instance" -r '.Reservations[].Instances[] | select(.InstanceId==$instance) | .PrivateIpAddress')
 
     cfssl gencert \
       -ca=ca.pem \
@@ -203,7 +201,7 @@ worker_nodes(){
 
 
 # certificate for the control manager
-control_manger(){
+control_manager(){
 
   FILE_NAME="kube-controller-manager-csr"
   define_certicate "system:kube-controller-manager" "system:kube-controller-manager" ${FILE_NAME}
@@ -251,20 +249,18 @@ api_server(){
   define_certicate "kubernetes" "Kubernetes" ${FILE_NAME}
 
   ## Get the public address of the load balancer
-  MASTER_PUBLIC_IP=$(aws ec2 describe-instances \
-        --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" \
-        --query "Reservations[*].Instances[*].PublicIpAddress" \
-        --output text | sed 's/\t/,/g')
+  MASTER_PUBLIC_IP=$(echo $(echo $RAW_MASTER_JSON \
+    | jq -r '.Reservations[].Instances[].PublicIpAddress')
+    | sed 's/\t/,/g')
 
   echo -e "\xE2\x9C\x94 Master public ip is ${MASTER_PUBLIC_IP}"
   # seperate the text with , as the delimiter
 
   KUBERNETES_HOSTNAMES=kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster,kubernetes.svc.cluster.local
 
-  local INTERNAL_IP=$(aws ec2 describe-instances \
-        --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}"\
-        --query "Reservations[*].Instances[*].PrivateIpAddress" \
-        --output text | sed 's/\t/,/g')
+  local INTERNAL_IP=$(echo $(echo $RAW_WORKER_JSON \
+    | jq -r ".Reservations[].Instances[].PrivateIpAddress" ) \
+    | sed 's/\t/,/g')
 
   echo -e "\xE2\x9C\x94 Master internal ip is ${INTERNAL_IP}"
   # Check on the ips used
@@ -294,52 +290,150 @@ service_account(){
 
 
 # Distribute the certificates and keys to the worker nodes
-distribute_workers(){
 
-  for worker_instance in $WORKER_NODES; do
-    # result should  be like this ec2-34-254-19-53.eu-west-1.compute.amazonaws.com
-    DNS_NAME=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${worker_instance}" \
-    --query "Reservations[*].Instances[*].PublicDnsName" \
-    --output text)
-    
-    echo -e "\xE2\x9C\x94 ${worker_instance} DNS name is ${DNS_NAME}"
+: '
+Options to use as variables:
+-m ==> eu-west-1-k8s-hardway-main ==> Master node name
+-w ==> k8s-hardway-nodes ==> Worker nodes name
+-l ==> k8s-hardway-nlb ===> Load balancer name
+'
 
-    scp -i ../${KEY_FILE}.pem ${worker_instance}-key.pem ${worker_instance}.pem ca.pem ubuntu@${DNS_NAME}:~/
+# -m m k8s-hardway -w k8s-hardway-nodes -l k8s-hardway
 
-    # success message
-    echo -e "\xE2\x9C\x94 ${worker_instance} files have been distributed successfully"
-  done
+define_kubeconfigs(){
+    local SERVER=$1
+    local FILE_NAME=$2
+
+    kubectl config set-cluster kubernetes-the-hard-way \
+        --certificate-authority=ca.pem \
+        --embed-certs=true \
+        --server=https://${SERVER}:6443 \
+        --kubeconfig=${FILE_NAME}.kubeconfig
+
+    kubectl config set-credentials system:${FILE_NAME} \
+        --client-certificate=${FILE_NAME}.pem \
+        --client-key=${FILE_NAME}-key.pem \
+        --embed-certs=true \
+        --kubeconfig=${FILE_NAME}.kubeconfig
+
+    kubectl config set-context default \
+        --cluster=kubernetes-the-hard-way \
+        --user=system:${FILE_NAME} \
+        --kubeconfig=${FILE_NAME}.kubeconfig
+
+    kubectl config use-context default --kubeconfig=${FILE_NAME}.kubeconfig
+
+}
+
+# The configs will be created on the controller nodes
+controller_configs(){
+
+    for instance in ${WORKER_NODES}; do
+
+        kubectl config set-cluster kubernetes-the-hard-way \
+            --certificate-authority=ca.pem \
+            --embed-certs=true \
+            --server=https://${KUBERNETES_PUBLIC_ADDRESS}:6443 \
+            --kubeconfig=${instance}.kubeconfig
+
+        kubectl config set-credentials system:node:${instance} \
+            --client-certificate=${instance}.pem \
+            --client-key=${instance}-key.pem \
+            --embed-certs=true \
+            --kubeconfig=${instance}.kubeconfig
+
+        kubectl config set-context default \
+            --cluster=kubernetes-the-hard-way \
+            --user=system:node:${instance} \
+            --kubeconfig=${instance}.kubeconfig
+
+        kubectl config use-context default --kubeconfig=${instance}.kubeconfig
+    done
 }
 
 
-# Distribute the certificates and keys to the controller nodes
-distribute_controllers(){
-  # check if key file exists
-  for master_instance in $MASTER_NODE; do
 
-    DNS_NAME=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${master_instance}" \
-    --query "Reservations[*].Instances[*].PublicDnsName" \
-    --output text)
+# The kube-proxy Kubernetes Configuration File
+kube_proxy_configs(){
+    define_kubeconfigs ${KUBERNETES_PUBLIC_ADDRESS} kube-proxy
+}
 
-    echo -e "\xE2\x9C\x94 ${master_instance} DNS name is ${DNS_NAME}"
+# The kube-controller-manager Kubernetes Configuration File
+controller_manager_configs(){
+    define_kubeconfigs "127.0.0.1" kube-controller-manager
+}
 
-    scp -i ../${KEY_FILE}.pem ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
-      service-account-key.pem service-account.pem ubuntu@${DNS_NAME}:~/
-    
-    # success message
-    echo -e "\xE2\x9C\x94 ${instance} files have been distributed successfully"
+# The kube-scheduler Kubernetes Configuration File
+scheduler_configs(){
+    define_kubeconfigs '127.0.0.1' kube-scheduler
+}
+
+# The admin Kubernetes Configuration File
+admin_configs(){
+    define_kubeconfigs '127.0.0.1' admin
+}
+
+# encryption config file
+define_encryption(){
+    local ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
+
+    cat > encryption-config.yaml <<EOF
+apiVersion: v1
+kind: EncryptionConfig
+resources:
+  - resources:
+      - secrets
+    providers:
+      - aescbc:
+          keys:
+            - name: key1
+              secret: ${ENCRYPTION_KEY}
+      - identity: {}
+EOF
+}
+
+# distribute the kubeconfig files to the worker nodes
+distribute_worker_configs(){
+
+  for instance in $WORKER_NODES; do
+      DNS_NAME=$(echo $RAW_WORKER_JSON | \
+          jq --arg instance "$instance" -r '.Reservations[].Instances[] | select(.InstanceId==$instance) | .PublicDnsName')
+
+      scp -i ../${KEY_FILE}.pem ${instance}.kubeconfig kube-proxy.kubeconfig ${instance}-key.pem ${instance}.pem ca.pem ubuntu@${DNS_NAME}:~/
+
+      # success message
+      echo -e "\xE2\x9C\x94 ${instance} kubeconfig file has been distributed successfully"
   done
 }
 
+# distribute the kubeconfig files and encryption to the controller manager nodes
+distribute_controller_configs(){
+
+  for instance in $MASTER_NODE; do
+      DNS_NAME=$(echo $RAW_MASTER_JSON | \
+          jq --arg instance "$instance" -r '.Reservations[].Instances[] | select(.InstanceId==$instance) | .PublicDnsName')
+
+      scp -i ../${KEY_FILE}.pem ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
+          service-account-key.pem service-account.pem admin.kubeconfig kube-controller-manager.kubeconfig \
+          kube-scheduler.kubeconfig encryption-config.yaml ubuntu@${DNS_NAME}:~/
+      
+      # success message
+      echo -e "\xE2\x9C\x94 ${instance} kubeconfig file has been distributed successfully"
+  done
+}
 
 checking_prerequisites
-change_dir
+define_vars
+define_encryption
+controller_configs
+kube_proxy_configs
+controller_manager_configs
+scheduler_configs
+admin_configs
 generate_ca_certs
 admin_controller
 worker_nodes
-control_manger
+control_manager
 kube_proxy
 scheduler
 api_server
