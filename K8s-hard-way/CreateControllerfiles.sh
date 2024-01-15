@@ -1,24 +1,24 @@
-# get the args for the script
+# // todo: get the args for the script
+# // todo: convert the script to use jq instead of calling APIs directly
+# // todo: get a cidr blocks that will be used for the cluster pods
+# // todo: use a seperate cidr block for the cluster services
+# // todo: set the master nodes within the same subnet as the services cidr block
+# // todo: check on how we can make initial cluster dynamic. Test it using jq
+# // todo: change the cidr block configurations to enable pod communication
+# // todo change the etcd server to use the loadbalancer dns name. 
+# // todo: count the number of master nodes using (| tr ',' '\n' | wc -l)
+# // todo: create a function for global variables
+# // todo: convert this to be used for multiple nodes
+# // todo: create a function to get the cidr blocks for the subnets that host the nodes
+# // todo: modify the ips 
+# // todo: try to get the cidr block for the subnets
+# // todo: remove the jq command and use the cidr block directly
+
 : '
 Options to use as variables:
 -i ==> eu-west-1-k8s-hardway-main ==> Master node name
 -l ==> k8s-hardway-nlb ===> Load balancer name
 '
-
-# // todo: convert the script to use jq instead of calling APIs directly
-# // todo: get a cidr blocks that will be used for the cluster pods
-# // todo: use a seperate cidr block for the cluster services
-# // todo: set the master nodes within the same subnet as the services cidr block
-
-
-# todo: check on how we can make initial cluster dynamic. Test it using jq
-# // todo: change the cidr block configurations to enable pod communication
-# CLUSTER_CIDR="10.0.0.128/16"
-# SERVICE_CIDR="10.0.0.0/25"
-home_dir=$(pwd)
-echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
-
-
 while getopts ":m:w:l:" opt; do
   case $opt in
     m) MASTER_NODE_NAME="$OPTARG";;
@@ -28,7 +28,15 @@ while getopts ":m:w:l:" opt; do
   esac
 done
 
-#### LOAD BALANCER ####
+# CLUSTER_CIDR="10.0.0.128/16"
+# SERVICE_CIDR="10.0.0.0/25"
+
+# getting the master node details
+RAW_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}")
+
+home_dir=$(pwd)
+echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
+
 # get the load balancer dns name    
 LOADBALANCER_DNS_NAME=$(aws elbv2 describe-load-balancers\
   --names ${LOADBALANCER_NAME}\
@@ -37,24 +45,24 @@ LOADBALANCER_DNS_NAME=$(aws elbv2 describe-load-balancers\
 
 echo -e "\e[32m \xE2\x9C\x94 Load Balancer DNS Name is: ${LOADBALANCER_DNS_NAME}\e[0m"
 
-# getting the master node details
-RAW_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}")
-
 #### SUBNETS ####
 # getting the subnet details to get the cidr block
 MASTER_NODE_SUBNET_ID=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].SubnetId')
 
 WORKER_NODE_SUBNET_ID=$(echo $(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=k8s-hardway-nodes" | \
-  jq -r '.Reservations[].Instances[].SubnetId') | awk '{print $1}')
+  --filters "Name=tag:Name,Values=${WORKER_NODE_NAME}" \
+  --query "Reservations[].Instances[].SubnetId[]" \
+  --output text) | awk '{print $1}')
 
 SERVICE_CIDR=$(aws ec2 describe-subnets \
-  --filters "Name=subnet-id,Values=${MASTER_NODE_SUBNET_ID}" | \
-  jq -r '.Subnets[].CidrBlock')
-
+  --filters "Name=subnet-id,Values=${MASTER_NODE_SUBNET_ID}" \
+  --query "Subnets[].CidrBlock[]"\
+  --output text)
+  
 CLUSTER_CIDR=$(aws ec2 describe-subnets \
-  --filters "Name=subnet-id,Values=${WORKER_NODE_SUBNET_ID}" | \
-  jq -r '.Subnets[].CidrBlock')
+  --filters "Name=subnet-id,Values=${WORKER_NODE_SUBNET_ID}"\
+  --query "Subnets[].CidrBlock[]"\
+  --output text)
 
 #### NODES ####
 # getting the configurations for the services
@@ -68,17 +76,18 @@ KEY_FILE=$(echo $(echo $RAW_JSON | \
 
 KEY="${home_dir}/${KEY_FILE}.pem"
 
-echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY_FILE}\e[0m"
+echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY}\e[0m"
 
 # internal IPs should replace the tabs with 
-MASTER_INTERNAL_IPS=$(echo $(echo $RAW_JSON | jq -r '.Reservations[].Instances[] | "\(.PrivateIpAddress)"') | sed 's/ /,/g')
+MASTER_INTERNAL_IPS=$(echo $(echo $RAW_JSON | \
+  jq -r '.Reservations[].Instances[] | "\(.PrivateIpAddress)"') |\
+  sed 's/ /,/g')
 
 echo -e "\e[32m \xE2\x9C\x94 Master Internal IPs are: ${MASTER_INTERNAL_IPS}\e[0m"
 
-# todo: confirm if this is public or private ips
-# ETCD server configurations
-ETCD_VARS=$(echo $(echo $RAW_JSON | \
-  jq -r '.Reservations[].Instances[] | "\(.InstanceId)=https://\(.PrivateIpAddress):2380"') \
+#### ETCD server configurations ####
+ETCD_VARS=$(echo $(echo $RAW_JSON \
+  | jq -r '.Reservations[].Instances[] | "\(.InstanceId)=https://\(.PrivateIpAddress):2380"') \
   | sed 's/ /,/g')
 
 echo -e "\e[32m \xE2\x9C\x94 ETCD Vars are: ${ETCD_VARS}\e[0m"
@@ -135,8 +144,6 @@ echo -e "\e[32m \xE2\x9C\x94 etcd.service file created successfully\e[0m"
 
 kube_apiserver_config(){
 # The Kubernetes API Server Configuration File
-# // todo change the etcd server to use the loadbalancer dns name. 
-# // todo: count the number of master nodes using (| tr ',' '\n' | wc -l)
 
 INTERNAL_IP=$1
 SERVER_COUNT=$(echo ${MASTER_INTERNAL_IPS} | tr ',' '\n' | wc -l)
@@ -332,42 +339,37 @@ push_cloud(){
   echo -e "\e[32m \xE2\x9C\x94 Controllers bootstrapped successfully\e[0m"
 }
 
-# todo: create a function for global variables
-# // todo: convert this to be used for multiple nodes
+
 define_variables(){
   
   NODE_ID=$1
-  # echo -e "\e[32m \xE2\x9C\x94 Node IDs are: ${NODE_IDS}\e[0m"
+  echo -e "\e[32m \xE2\x9C\x94 Node IDs are: ${NODE_IDS}\e[0m"
 
   INTERNAL_IP=$(echo $RAW_JSON |\
-   jq --arg NODE_ID ${NODE_ID} \
-   '.Reservations[].Instances[] | select(.InstanceId==$NODE_ID) | "\(.PrivateIpAddress)"')
-
+   jq --arg NODE_ID ${NODE_ID} '.Reservations[].Instances[] | select(.InstanceId==$NODE_ID) | "\(.PrivateIpAddress)"')
 
   # success message to get internal ip
   echo -e "\e[32m \xE2\x9C\x94 Internal IP is: ${INTERNAL_IP}\e[0m"
+
+  # ETCD_NAME=$(sudo ssh -i "${KEY}" ubuntu@${DNS_NAME} "hostname -s")
+  
+  etcd_configfiles ${NODE_ID} ${INTERNAL_IP} 
+  kube_apiserver_config ${INTERNAL_IP} 
+  kubecontroller_config
+  kubescheduler_config
+  nginx_healthcheck
 
   DNS_NAME=$(echo $RAW_JSON |\
    jq --arg NODE_ID ${NODE_ID} \
    '.Reservations[].Instances[] | select(.InstanceId==$NODE_ID) | "\(.PublicDnsName)"')
 
   echo -e "\e[32m \xE2\x9C\x94 DNS Name is: ${DNS_NAME}\e[0m"
-
-  # ETCD_NAME=$(sudo ssh -i "${KEY}" ubuntu@${DNS_NAME} "hostname -s")
-  
-  # etcd_configfiles ${NODE_ID} ${INTERNAL_IP} 
-  # kube_apiserver_config ${INTERNAL_IP} 
-  # kubecontroller_config
-  # kubescheduler_config
-  # nginx_healthcheck
-
-  # push_cloud ${DNS_NAME}
+  push_cloud ${DNS_NAME}
   
 }
 
 
-# todo: create a function to get the cidr blocks for the subnets that host the nodes
-# todo: modify the ips 
+
 for NODE_ID in ${NODE_IDS}; do
 
   echo -e "\e[32m \xE2\x9C\x94 Master node is ${NODE_ID} \e[0m "

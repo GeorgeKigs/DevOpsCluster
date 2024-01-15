@@ -9,52 +9,52 @@ while getopts ":m:w:l:" opt; do
   esac
 done
 
+describe_variables(){
+  
+  # getting the worker node details
+  RAW_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${WORKER_NODE_NAME}")
 
-# getting the load balancer dns name
-LOADBALANCER_DNS_NAME=$(aws elbv2 describe-load-balancers\
-  --names ${LOADBALANCER_NAME}\
-  --query "LoadBalancers[].DNSName[]"\
-  --output text)
+  WORKER_NODE_SUBNET_ID=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].SubnetId')
 
-echo -e "\e[32m \xE2\x9C\x94 Load Balancer DNS Name is: ${LOADBALANCER_DNS_NAME}\e[0m"
 
-# getting the worker node details
-RAW_JSON=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${WORKER_NODE_NAME}")
+  # getting the load balancer dns name
+  LOADBALANCER_DNS_NAME=$(aws elbv2 describe-load-balancers\
+    --names ${LOADBALANCER_NAME}\
+    --query "LoadBalancers[].DNSName[]"\
+    --output text)
 
-#### SUBNETS ####
-# getting the subnet details to get the cidr block
-MASTER_NODE_SUBNET_ID=$(echo $(aws ec2 describe-instances \
-  --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" | \
-  jq -r '.Reservations[].Instances[].SubnetId') | awk '{print $1}')
+  echo -e "\e[32m \xE2\x9C\x94 Load Balancer DNS Name is: ${LOADBALANCER_DNS_NAME}\e[0m"
 
-WORKER_NODE_SUBNET_ID=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].SubnetId')
+  #### SUBNETS ####
+  # getting the subnet details to get the cidr block
+  MASTER_NODE_SUBNET_ID=$(echo $(aws ec2 describe-instances \
+    --filters "Name=tag:Name,Values=${MASTER_NODE_NAME}" | \
+    jq -r '.Reservations[].Instances[].SubnetId') | awk '{print $1}')
+  
+  SERVICE_CIDR=$(aws ec2 describe-subnets \
+    --filters "Name=subnet-id,Values=${MASTER_NODE_SUBNET_ID}" | \
+    jq -r '.Subnets[].CidrBlock')
 
-SERVICE_CIDR=$(aws ec2 describe-subnets \
-  --filters "Name=subnet-id,Values=${MASTER_NODE_SUBNET_ID}" | \
-  jq -r '.Subnets[].CidrBlock')
+  echo -e "\e[32m \xE2\x9C\x94 Service CIDR is: ${SERVICE_CIDR}\e[0m"
 
-POD_CIDR=$(aws ec2 describe-subnets \
-  --filters "Name=subnet-id,Values=${WORKER_NODE_SUBNET_ID}" | \
-  jq -r '.Subnets[].CidrBlock')
+  POD_CIDR=$(aws ec2 describe-subnets \
+    --filters "Name=subnet-id,Values=${WORKER_NODE_SUBNET_ID}" | \
+    jq -r '.Subnets[].CidrBlock')
 
-# success message to get the cidr block
-echo -e "\e[32m \xE2\x9C\x94 Service CIDR is: ${SERVICE_CIDR}\e[0m"
-echo -e "\e[32m \xE2\x9C\x94 Pod CIDR is: ${POD_CIDR}\e[0m"
+  echo -e "\e[32m \xE2\x9C\x94 Pod CIDR is: ${POD_CIDR}\e[0m"
 
-# getting the worker node details
-NODE_IDS=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].InstanceId')
+  # getting the worker node details
+  NODE_IDS=$(echo $RAW_JSON | jq -r '.Reservations[].Instances[].InstanceId')
 
-KEY_FILE=$(echo $(echo $RAW_JSON | jq -r '.Reservations[].Instances[].KeyName') | awk '{print $1}')
+  # Getting the key file that is required to ssh into the instance
+  KEY_FILE=$(echo $(echo $RAW_JSON | jq -r '.Reservations[].Instances[].KeyName') | awk '{print $1}')
+  KEY="${home_dir}/${KEY_FILE}.pem"
+  echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY_FILE}\e[0m"
 
-# success message to get key file
-echo -e "\e[32m \xE2\x9C\x94 Key File is: ${KEY_FILE}\e[0m"
-
-KEY="${home_dir}/${KEY_FILE}.pem"
-home_dir=$(pwd)
-
-# success message to get home directory
-echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
-
+  # success message to get home directory
+  home_dir=$(pwd)
+  echo -e "\e[32m \xE2\x9C\x94 ${home_dir} \e[0m"
+}
 
 create_networking_files(){
 
@@ -219,20 +219,18 @@ bootstrap_worker(){
   NODE_ID=$1
   
   echo -e "\e[32m \xE2\x9C\x94 Bostrapping the worker node: ${NODE_IDS}\e[0m"
-  
-  DNS_NAME=$(aws ec2 describe-instances \
-    --filters "Name=instance-id,Values=${NODE_ID}" \
-    --query "Reservations[*].Instances[*].PublicDnsName" \
-    --output text)
-
-  # success message to get dns name
-  echo -e "\e[32m \xE2\x9C\x94 DNS Name is: ${DNS_NAME}\e[0m"
-  
-  # bootstrap files
+  # bootstrap the files required for the worker node
   create_networking_files
   containerd_files
   kubeconfig_files ${NODE_ID}
 
+  # use jq to get the dns name
+  DNS_NAME=$(echo $RAW_JSON |\
+    jq --arg NODE_ID "$NODE_ID" -r '.Reservations[].Instances[] | select(.InstanceId==$NODE_ID) | .PublicDnsName'
+  )
+  # success message to get dns name
+  echo -e "\e[32m \xE2\x9C\x94 DNS Name is: ${DNS_NAME}\e[0m"
+  
   # push the files to the instance
   sudo scp -i ${KEY} \
     10-bridge.conf 99-loopback.conf config.toml\
@@ -245,19 +243,21 @@ bootstrap_worker(){
 
   # run the bootstrap script
   sudo ssh -i ${KEY} ubuntu@${DNS_NAME} "bash BootstrapWorkers.sh -i ${NODE_ID}"
-
 }
 
-for NODE_ID in ${NODE_IDS}; do
+main(){
+  describe_variables
+  for NODE_ID in ${NODE_IDS}; do
 
-  echo -e "\e[32m \xE2\x9C\x94 Worker Node is ${NODE_ID} \e[0m "
+    echo -e "\e[32m \xE2\x9C\x94 Worker Node is ${NODE_ID} \e[0m "
 
-  mkdir -p ${home_dir}/certificates/${NODE_ID}
-  cp BootstrapWorkers.sh ${home_dir}/certificates/${NODE_ID}
+    mkdir -p ${home_dir}/certificates/${NODE_ID}
+    cp BootstrapWorkers.sh ${home_dir}/certificates/${NODE_ID}
 
-  cd ${home_dir}/certificates/${NODE_ID}
+    cd ${home_dir}/certificates/${NODE_ID}
 
-  bootstrap_worker ${NODE_ID}
-  
-  cd ${home_dir}
-done
+    bootstrap_worker ${NODE_ID}
+    
+    cd ${home_dir}
+  done
+}
