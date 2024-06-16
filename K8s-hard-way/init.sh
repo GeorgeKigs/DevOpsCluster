@@ -328,49 +328,35 @@ define_kubeconfigs(){
 # The configs will be created on the controller nodes
 controller_configs(){
 
-    for instance in ${WORKER_NODES}; do
+  for instance in ${WORKER_NODES}; do
+    kubectl config set-cluster kubernetes-the-hard-way \
+      --certificate-authority=ca.pem \
+      --embed-certs=true \
+      --server=https://${KUBERNETES_PUBLIC_ADDRESS}:6443 \
+      --kubeconfig=${instance}.kubeconfig
 
-        kubectl config set-cluster kubernetes-the-hard-way \
-            --certificate-authority=ca.pem \
-            --embed-certs=true \
-            --server=https://${KUBERNETES_PUBLIC_ADDRESS}:6443 \
-            --kubeconfig=${instance}.kubeconfig
+    kubectl config set-credentials system:node:${instance} \
+      --client-certificate=${instance}.pem \
+      --client-key=${instance}-key.pem \
+      --embed-certs=true \
+      --kubeconfig=${instance}.kubeconfig
 
-        kubectl config set-credentials system:node:${instance} \
-            --client-certificate=${instance}.pem \
-            --client-key=${instance}-key.pem \
-            --embed-certs=true \
-            --kubeconfig=${instance}.kubeconfig
+    kubectl config set-context default \
+      --cluster=kubernetes-the-hard-way \
+      --user=system:node:${instance} \
+      --kubeconfig=${instance}.kubeconfig
 
-        kubectl config set-context default \
-            --cluster=kubernetes-the-hard-way \
-            --user=system:node:${instance} \
-            --kubeconfig=${instance}.kubeconfig
-
-        kubectl config use-context default --kubeconfig=${instance}.kubeconfig
-    done
+    kubectl config use-context default --kubeconfig=${instance}.kubeconfig
+  done
 }
-
 
 
 # The kube-proxy Kubernetes Configuration File
 kube_proxy_configs(){
-    define_kubeconfigs ${KUBERNETES_PUBLIC_ADDRESS} kube-proxy
-}
-
-# The kube-controller-manager Kubernetes Configuration File
-controller_manager_configs(){
-    define_kubeconfigs "127.0.0.1" kube-controller-manager
-}
-
-# The kube-scheduler Kubernetes Configuration File
-scheduler_configs(){
-    define_kubeconfigs '127.0.0.1' kube-scheduler
-}
-
-# The admin Kubernetes Configuration File
-admin_configs(){
-    define_kubeconfigs '127.0.0.1' admin
+  define_kubeconfigs ${KUBERNETES_PUBLIC_ADDRESS} kube-proxy
+  define_kubeconfigs "127.0.0.1" kube-controller-manager
+  define_kubeconfigs '127.0.0.1' kube-scheduler
+  define_kubeconfigs '127.0.0.1' admin
 }
 
 # encryption config file
@@ -427,9 +413,6 @@ define_vars
 define_encryption
 controller_configs
 kube_proxy_configs
-controller_manager_configs
-scheduler_configs
-admin_configs
 generate_ca_certs
 admin_controller
 worker_nodes
